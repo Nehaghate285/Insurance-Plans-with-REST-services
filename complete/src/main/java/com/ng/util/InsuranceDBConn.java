@@ -42,6 +42,10 @@ public class InsuranceDBConn {
 	        String content= (String) hashOps.get(KEY, id);
 	        return content;
 	    }
+	    public String findPlanRelationShips(String id) {
+	        String content= (String) hashOps.get(KEY, id);
+	        return content;
+	    }
 	 
 	    public Map<String, String> findAllInsurancePlans() {
 	    	Map<String, String> con = hashOps.entries(KEY);
