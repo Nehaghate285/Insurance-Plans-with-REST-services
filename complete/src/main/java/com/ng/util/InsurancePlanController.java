@@ -1,18 +1,16 @@
 package com.ng.util;
 
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
-import java.math.BigInteger;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
+import javax.annotation.security.RolesAllowed;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
@@ -22,86 +20,54 @@ import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
+import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.WebRequest;
 
 import com.github.fge.jsonschema.core.exceptions.ProcessingException;
+import com.google.gson.JsonObject;
+import com.jayway.jsonpath.Configuration;
+import com.jayway.jsonpath.JsonPath;
 import com.ng.pojo.InsurancePlan;
 
+import io.searchbox.client.JestClient;
 
 @RestController
+@Component
 public class InsurancePlanController {
 
-	@Autowired
-	private InsuranceDBConn insurancedbConn;
-
-	private final AtomicLong counter = new AtomicLong();
-	private Map<String, Map<String, Object>> insuranceMap = new HashMap<String, Map<String, Object>>();
-
-	// Get all the data
-	@RequestMapping(value = "/plan", method = RequestMethod.GET)
-	public JSONArray getAll() throws ParseException {
-		JSONArray jsonArray = new JSONArray();
-
-		String count = insurancedbConn.findInsurancePlan("Count");
-		int countInt = Integer.parseInt(count);
-		for (int i = 1; i <= countInt; i++) {
-			jsonArray.add(getSpecficPlan("plan_" + i));
-		}
-		return jsonArray;
-
+	public InsurancePlanController() throws IOException {
+		this.client = ElasticSearch.getJestConnection();
+		this.redisQueue = new RedisQueue(client);
+		ElasticSearch.createNewIndex(client);
 	}
 
-	// Get details for particular ID
+	private Map<String, Map<String, Object>> map = new HashMap<String, Map<String, Object>>();
+	private JestClient client;
+	private RedisQueue redisQueue;
+
+	// working
 	@RequestMapping(value = "/{urlTypes}/{id}", method = RequestMethod.GET)
 	@ResponseBody
-	public JSONObject getInsuranceById(@PathVariable String id, HttpServletRequest request,
-			HttpServletResponse response,@PathVariable String urlTypes) throws ParseException {
+	public JSONObject getSpecificData(@PathVariable String id, @PathVariable String urlTypes, WebRequest webRequest,
+			HttpServletRequest request, HttpServletResponse response) throws java.text.ParseException, ParseException {
 		JSONParser jsonParser = new JSONParser();
+
 		String etagFromRequest = request.getHeader(HttpHeaders.IF_NONE_MATCH);
-		String etagFromRedis = insurancedbConn.findInsurancePlan("etag_" +urlTypes+"_" +id);
-		
-		id = urlTypes + "_" + id;
-		
+
+		String etagFromRedis = insurancedbConn.findInsurancePlan("etag_" + urlTypes + "_" + id);
 		if (etagFromRequest == null || !etagFromRequest.equals(etagFromRedis)) {
-			String simplePropertiesMap = insurancedbConn.findInsurancePlan(id);
-			if (null != simplePropertiesMap && !simplePropertiesMap.isEmpty()) {
-				JSONObject jsonObject = (JSONObject) jsonParser.parse(simplePropertiesMap);
-				String str = insurancedbConn.findPlanRelationShips("rel_" + id);
-				str = str.toString().replace("[", "").replace("]", "");
-				String[] relationShips = str.split(",");
-				for (String rel : relationShips) {
-					String nestSimpleProp = insurancedbConn.findInsurancePlan(rel.trim().replaceAll("ref_", ""));
-					if (!nestSimpleProp.contains("[")) {
-						JSONObject jsonObject1 = (JSONObject) jsonParser.parse(nestSimpleProp);
-						rel = rel.replaceAll("ref_", "");
-						jsonObject.put(rel.substring(0, rel.indexOf("_")), jsonObject1);
-					} else {
-						nestSimpleProp = nestSimpleProp.toString().replace("[", "").replace("]", "");
-						String[] nestSimplePropArr = nestSimpleProp.split(",");
-						JSONArray jsonArray = new JSONArray();
-						for (String rel1 : nestSimplePropArr) {
-							String rel1value = insurancedbConn.findInsurancePlan(rel1.trim().replaceAll("ref_", ""));
-							JSONObject jsonObject1 = (JSONObject) jsonParser.parse(rel1value);
-							// jsonObject.put(rel1.toString().substring(0,
-							// rel1.toString().indexOf("_")), jsonObject1);
-							jsonArray.add(jsonObject1);
-						}
-						jsonObject.put(rel.toString().substring(0, rel.toString().indexOf("_")), jsonArray);
-					}
-				}
-				// JSONObject jsonObject = new JSONObject(simplePropertiesMap);
-				return jsonObject;
-			} else {
-				JSONObject jsonObject = new JSONObject();
-				jsonObject.put("error", "plan does not exists");
-				return jsonObject;
-			}
+			String idNew = urlTypes + "_" + id;
+			return getPlan(idNew, jsonParser);
+
 		} else {
+
 			JSONObject jsonObject = new JSONObject();
 			jsonObject.put("error", "No change in object");
 			response.setStatus(HttpServletResponse.SC_NOT_MODIFIED);
@@ -110,73 +76,165 @@ public class InsurancePlanController {
 
 	}
 
-	// Post insurance details
-	@RequestMapping(value = "/{url}", method = RequestMethod.POST)
-	public String addGreeting(@RequestBody JSONObject jsonObject, HttpServletResponse response,
-			@PathVariable String url)
+	// working
+	@RequestMapping(value = "/{urlTypes}", method = RequestMethod.POST)
+	@RolesAllowed({ "admin" })
+	public String addInsuranceData(@RequestBody JSONObject jsonObject, @PathVariable String urlTypes,
+			HttpServletResponse response)
 			throws ProcessingException, IOException, ParseException, NoSuchAlgorithmException {
-		if (url.equalsIgnoreCase("jsonSchema")) {
+		String key = "plan";
+		if (urlTypes.equalsIgnoreCase("plan")) {
+			key = "plan";
+		} else if (urlTypes.equalsIgnoreCase("service")) {
+			key = "service";
+		} else {
 			addSchemaToRedis();
 			return "schema added";
 		}
-
 		if (validateJSON(jsonObject)) {
-			long tagCount = counter.incrementAndGet();
-			
-			response.setHeader(HttpHeaders.IF_NONE_MATCH, addPostDataToRedisEtag(jsonObject,tagCount));
-			return addPostDataToRedis(jsonObject,tagCount);
+			String tagCount = JSONUtility.generateUUID();
+			// adding object to queue
+			JSONObject jsonObjectForElasticSearch = jsonObject;
+			jsonObjectForElasticSearch.put("uuid", tagCount);
+			response.setHeader(HttpHeaders.IF_NONE_MATCH, addPostDataToRedisEtag(jsonObject, tagCount));
+			String finalObj = addPostDataToRedis(jsonObject, tagCount);
+			JSONParser jsonParser = new JSONParser();
+			JSONObject jsonObject2 = getPlan("plan_" + tagCount, jsonParser);
+			redisQueue.addToQueue(jsonObject2);
+			return finalObj;
 		} else {
-			return "failed to post.Please check the json schema";
+			return "failed";
 		}
+
 	}
-	
-	
-	public String addPostDataToRedisEtag(JSONObject jsonObject,long tagCount)
-			throws UnsupportedEncodingException, NoSuchAlgorithmException {
+	// working
 
-		String etagValue = JSONUtility.generateEtag(jsonObject.toString());
-		InsurancePlan etag = new InsurancePlan("etag_plan_" + tagCount, etagValue);
-		insurancedbConn.saveInsuranceInfo(etag);
-		return etagValue;
-	}
-
-
-	// update insurance details
 	@RequestMapping(value = "/{urlTypes}/{id}", method = RequestMethod.PUT)
-	public String updatePlan(@RequestBody JSONObject jsonObject, @PathVariable String id,@PathVariable String urlTypes,
-			HttpServletResponse response) throws UnsupportedEncodingException, NoSuchAlgorithmException {
-		// insuranceMap.put(id, jsonObject);
-		String newID;
-		newID = urlTypes + "_" + id;
-		
-		updatePutToRedis(jsonObject, newID);
-		InsurancePlan etag = new InsurancePlan("etag_" + newID, JSONUtility.generateEtag(jsonObject.toString()));
-		insurancedbConn.saveInsuranceInfo(etag);
+	public String updateInsuranceData(@RequestBody JSONObject jsonObject, @PathVariable String id,
+			@PathVariable String urlTypes, HttpServletResponse response)
+			throws NoSuchAlgorithmException, ProcessingException, IOException, ParseException {
+		if (validateJSON(jsonObject)) {
+			ElasticSearch.deleteEntryFromIndex(client, id);
+			jsonObject.put("uuid", id);
 
-		response.setHeader(HttpHeaders.IF_NONE_MATCH, JSONUtility.generateEtag(jsonObject.toString()));
+			updateDataToRedis(jsonObject, id, urlTypes);
+			JSONParser jsonParser = new JSONParser();
+			JSONObject jsonObject2 = getPlan("plan_" + id, jsonParser);
+			ElasticSearch.storeData(client, jsonObject2);
+			InsurancePlan etag = new InsurancePlan("etag_" + id, JSONUtility.generateEtag(jsonObject.toString()));
+			insurancedbConn.saveInsuranceInfo(etag);
+			response.setHeader(HttpHeaders.IF_NONE_MATCH, JSONUtility.generateEtag(jsonObject.toString()));
 
-		return "updated insurance info";
+			return "success from put";
+		} else {
+			return "json schema validation failed";
+		}
 
 	}
 
-	// delete insurance info
+	// working
 	@RequestMapping(value = "/{urlTypes}/{id}", method = RequestMethod.DELETE)
-	public String deletePlan(@PathVariable String id, @PathVariable String urlTypes) {
+	public String deleteInsuranceData(@PathVariable String id, @PathVariable String urlTypes) throws IOException {
+		// delete from elastic search
+		ElasticSearch.deleteEntryFromIndex(client, id);
 
 		id = urlTypes + "_" + id;
-		
+		deleteRecursively(id);
+		insurancedbConn.deleteInsurancePlan(id);
+		return "success from delete";
+
+	}
+
+	// working
+	@RequestMapping(value = { "{parentId}/{urlTypes}/{id}",
+			"{parentId}/{urlTypes}/{id}/{subId}" }, method = RequestMethod.PATCH)
+	public String patchGreeting(@RequestBody JSONObject newJsonObject, @PathVariable String id,
+			@PathVariable String urlTypes, @PathVariable Optional<String> subId, @PathVariable String parentId)
+			throws ParseException, IOException {
+		id = urlTypes + "_" + id;
+		if (subId.isPresent()) {
+			id = id + "_" + subId.get();
+		}
+
+		JSONParser jsonParser = new JSONParser();
+		String content = insurancedbConn.findInsurancePlan(id);
+		JSONObject oldJSONObject = (JSONObject) jsonParser.parse(content);
+		JSONObject finalJSON = JSONUtility.patch(oldJSONObject, newJsonObject);
+		InsurancePlan insurancePlan = new InsurancePlan(id, finalJSON.toString());
+		insurancedbConn.saveInsuranceInfo(insurancePlan);
+		JSONObject jsonObject2 = getPlan("plan_" + parentId, jsonParser);
+		ElasticSearch.patchEntryFromIndex(client, parentId, jsonObject2);
+		return "success from patch for " + id;
+
+	}
+
+	@RequestMapping(value = "/jsonPath", method = RequestMethod.GET)
+	public Object getJSONPath(@RequestParam("data") String itemid) throws Exception {
+		JsonObject jsonResult = ElasticSearch.readAllData(client);
+		Object document = Configuration.defaultConfiguration().jsonProvider().parse(jsonResult.toString());
+		Object result = JsonPath.read(document, itemid);
+		return result;
+
+	}
+
+	private JSONObject getPlan(String id, JSONParser jsonParser) throws ParseException {
+
+		String simplePropertiesMap = insurancedbConn.findInsurancePlan(id);
+		if (null != simplePropertiesMap && !simplePropertiesMap.isEmpty()) {
+			JSONObject jsonObject = (JSONObject) jsonParser.parse(simplePropertiesMap);
+			createRelations(id, jsonParser, jsonObject);
+			return jsonObject;
+		} else {
+			JSONObject jsonObject = new JSONObject();
+			jsonObject.put("error", "plan does not exists");
+			return jsonObject;
+		}
+	}
+
+	private void createRelations(String id, JSONParser jsonParser, JSONObject jsonObject) throws ParseException {
 		String str = insurancedbConn.findPlanRelationShips("rel_" + id);
-		str = str.toString().replace("[", "").replace("]", "");
+		if (null != str && !str.isEmpty()) {
+			str = str.replace("[", "").replace("]", "");
+			String[] relationShips = str.split(",");
+			for (String rel : relationShips) {
+				rel = rel.trim();
+				String nestSimpleProp = insurancedbConn.findInsurancePlan(rel.replaceAll("ref_", ""));
+				if (!nestSimpleProp.contains("[")) {
+					JSONObject jsonObject1 = (JSONObject) jsonParser.parse(nestSimpleProp);
+					rel = rel.replaceAll("ref_", "");
+
+					createRelations(rel, jsonParser, jsonObject1);
+					jsonObject.put(rel.substring(0, rel.indexOf("_")), jsonObject1);
+
+				} else {
+					nestSimpleProp = nestSimpleProp.replace("[", "").replace("]", "");
+					String[] nestSimplePropArr = nestSimpleProp.split(",");
+					JSONArray jsonArray = new JSONArray();
+					for (String rel1 : nestSimplePropArr) {
+						String rel1value = insurancedbConn.findInsurancePlan(rel1.trim().replaceAll("ref_", ""));
+						JSONObject jsonObject1 = (JSONObject) jsonParser.parse(rel1value);
+						jsonArray.add(jsonObject1);
+					}
+					jsonObject.put(rel.toString().substring(0, rel.toString().indexOf("_")), jsonArray);
+				}
+			}
+		}
+	}
+
+	private void deleteRecursively(String id) {
+		String str = insurancedbConn.findPlanRelationShips("rel_" + id);
+		str = str.replace("[", "").replace("]", "");
 		String[] relationShips = str.split(",");
 		for (String rel : relationShips) {
 			String nestSimpleProp = insurancedbConn.findInsurancePlan(rel.trim());
 			if (null != nestSimpleProp) {
 				if (!nestSimpleProp.contains("[")) {
+					deleteRecursively(nestSimpleProp);
 					if (!rel.contains("ref_")) {
 						insurancedbConn.deleteInsurancePlan(rel.trim());
 					}
 				} else {
-					nestSimpleProp = nestSimpleProp.toString().replace("[", "").replace("]", "");
+					nestSimpleProp = nestSimpleProp.replace("[", "").replace("]", "");
 					String[] nestSimplePropArr = nestSimpleProp.split(",");
 
 					for (String rel1 : nestSimplePropArr) {
@@ -189,34 +247,35 @@ public class InsurancePlanController {
 			}
 		}
 		insurancedbConn.deleteInsurancePlan("rel_" + id);
-		insurancedbConn.deleteInsurancePlan(id);
-		return "success from delete for id : " + id;
-
 	}
 
-	// working
-	@RequestMapping(value = { "/{urlTypes}/{id}", "/{urlTypes}/{id}/{subId}" }, method = RequestMethod.PATCH)
-	public String patchGreeting(@RequestBody JSONObject newjsonObject, @PathVariable String id,
-			@PathVariable String urlTypes, @PathVariable Optional<String> subId) throws ParseException {
-		id = urlTypes + "_" + id;
-		if (subId.isPresent()) {
-			id = id + "_" + subId.get();
+	private void deleteRecursivelyFromPut(String id) {
+		String str = insurancedbConn.findPlanRelationShips("rel_" + id);
+		if (null != str && !str.isEmpty()) {
+			str = str.toString().replace("[", "").replace("]", "");
+			String[] relationShips = str.split(",");
+			for (String rel : relationShips) {
+				String nestSimpleProp = insurancedbConn.findInsurancePlan(rel.trim().toString());
+				if (null != nestSimpleProp) {
+					if (!nestSimpleProp.contains("[")) {
+						deleteRecursively(nestSimpleProp);
+						insurancedbConn.deleteInsurancePlan(rel.trim());
+					} else {
+						nestSimpleProp = nestSimpleProp.toString().replace("[", "").replace("]", "");
+						String[] nestSimplePropArr = nestSimpleProp.split(",");
+
+						for (String rel1 : nestSimplePropArr) {
+							insurancedbConn.deleteInsurancePlan(rel1.trim());
+						}
+						insurancedbConn.deleteInsurancePlan(rel.trim());
+					}
+				}
+			}
+			insurancedbConn.deleteInsurancePlan("rel_" + id);
 		}
-		JSONParser jsonParser = new JSONParser();
-		String content = insurancedbConn.findInsurancePlan(id);
-		JSONObject oldJSONObject = (JSONObject) jsonParser.parse(content);
-		JSONObject finalJSON = JSONUtility.patch(oldJSONObject, newjsonObject);
-		InsurancePlan insurancePlan = new InsurancePlan(id, finalJSON.toString());
-		insurancedbConn.saveInsuranceInfo(insurancePlan);
-
-		return "success from patch for " + id;
-
 	}
 
-	// validation for json document
 	public boolean validateJSON(JSONObject jsonObject) throws ProcessingException, IOException, ParseException {
-		JSONParser parser = new JSONParser();
-
 		JSONParser jsonParser = new JSONParser();
 		String jsonSchema = insurancedbConn.findInsurancePlan("jsonSchema");
 		JSONObject jsonSchemaObj = (JSONObject) jsonParser.parse(jsonSchema);
@@ -226,6 +285,7 @@ public class InsurancePlanController {
 		} else {
 			return false;
 		}
+
 	}
 
 	public void addSchemaToRedis() throws FileNotFoundException, IOException, ParseException {
@@ -235,8 +295,54 @@ public class InsurancePlanController {
 		obj = parser.parse(new FileReader("D:/files/schema-1.json"));
 		JSONObject jsonSchema = (JSONObject) obj;
 
-		InsurancePlan ip = new InsurancePlan("jsonSchema", jsonSchema.toString());
-		insurancedbConn.saveInsuranceInfo(ip);
+		InsurancePlan insurancePlan = new InsurancePlan("jsonSchema", jsonSchema.toString());
+		insurancedbConn.saveInsuranceInfo(insurancePlan);
+
+	}
+
+	@Autowired
+	private InsuranceDBConn insurancedbConn;
+
+	public String addPostDataToRedis(JSONObject jsonObject, String tagCount)
+			throws UnsupportedEncodingException, NoSuchAlgorithmException {
+		JSONUtility jsonUitility = new JSONUtility();
+
+		/*
+		 * String etagValue = JSONUitility.generateEtag(jsonObject.toString());
+		 * insurancePlan etag = new insurancePlan("etag_plan_" + tagCount,
+		 * etagValue);
+		 */
+
+		return jsonUitility.jsonToMapAndStoreInRedis(jsonObject, insurancedbConn, tagCount);
+
+		// insurancedbConn.saveinsurancePlan(etag);
+		// return etagValue;
+
+	}
+
+	public String addPostDataToRedisEtag(JSONObject jsonObject, String tagCount)
+			throws UnsupportedEncodingException, NoSuchAlgorithmException {
+
+		String etagValue = JSONUtility.generateEtag(jsonObject.toString());
+		InsurancePlan etag = new InsurancePlan("etag_plan_" + tagCount, etagValue);
+		insurancedbConn.saveInsuranceInfo(etag);
+		return etagValue;
+	}
+
+	public void updateDataToRedis(JSONObject jsonObject, String id, String key) {
+
+		JSONUtility jsonUitility = new JSONUtility();
+		deleteRecursivelyFromPut("plan_" + id);
+		insurancedbConn.deleteInsurancePlan(id);
+		jsonUitility.jsonToMapAndStoreInRedis(jsonObject, insurancedbConn, id);
+
+	}
+
+	public void mergeDataToRedis(JSONObject jsonObject, String id, String key) {
+		InsurancePlan insurancePlan = new InsurancePlan(id, jsonObject.toString());
+		insurancedbConn.updateInsurancePlan(insurancePlan);
+		insurancedbConn.updateInsurancePlan(insurancePlan);
+		map.put(insurancePlan.getId(), JSONUtility.jsonToMap(jsonObject));
 
 	}
 
@@ -246,70 +352,11 @@ public class InsurancePlanController {
 		String simplePropertiesMap = insurancedbConn.findInsurancePlan(id);
 		if (null != simplePropertiesMap && !simplePropertiesMap.isEmpty()) {
 			JSONObject jsonObject = (JSONObject) jsonParser.parse(simplePropertiesMap);
-			String str = insurancedbConn.findPlanRelationShips("rel_" + id);
-			str = str.toString().replace("[", "").replace("]", "");
-			String[] relationShips = str.split(",");
-			for (String rel : relationShips) {
-				String nestSimpleProp = insurancedbConn.findInsurancePlan(rel.trim().toString());
-				if (!nestSimpleProp.contains("[")) {
-					JSONObject jsonObject1 = (JSONObject) jsonParser.parse(nestSimpleProp);
-					jsonObject.put(rel.toString().substring(0, rel.toString().indexOf("_")), jsonObject1);
-				} else {
-					nestSimpleProp = nestSimpleProp.toString().replace("[", "").replace("]", "");
-					String[] nestSimplePropArr = nestSimpleProp.split(",");
-					JSONArray jsonArray = new JSONArray();
-					for (String rel1 : nestSimplePropArr) {
-						String rel1value = insurancedbConn.findInsurancePlan(rel1.trim().toString());
-						JSONObject jsonObject1 = (JSONObject) jsonParser.parse(rel1value);
-						// jsonObject.put(rel1.toString().substring(0,
-						// rel1.toString().indexOf("_")), jsonObject1);
-						jsonArray.add(jsonObject1);
-					}
-					jsonObject.put(rel.toString().substring(0, rel.toString().indexOf("_")), jsonArray);
-				}
-			}
-			// JSONObject jsonObject = new JSONObject(simplePropertiesMap);
+			createRelations(id, jsonParser, jsonObject);
 			return jsonObject;
 		}
 
 		return null;
-	}
-
-	// inject the template as ListOperations
-	// can also inject as Value, Set, ZSet, and HashOperations
-
-	public String addPostDataToRedis(JSONObject jsonObject, long tagCount)
-			throws UnsupportedEncodingException, NoSuchAlgorithmException {
-		
-		JSONUtility jsonUtility = new JSONUtility();
-		int countInt = 0;
-		
-		if (null != insurancedbConn.findInsurancePlan("Count")) {
-			String count = insurancedbConn.findInsurancePlan("Count");
-			countInt = Integer.parseInt(count) + 1;
-			InsurancePlan entity = new InsurancePlan("Count", String.valueOf(countInt));
-			insurancedbConn.saveInsuranceInfo(entity);
-		} else {
-			InsurancePlan entity = new InsurancePlan("Count", String.valueOf(1));
-			insurancedbConn.saveInsuranceInfo(entity);
-		}
-		return jsonUtility.jsonToMapAndStoreInRedis(jsonObject, insurancedbConn, tagCount);
-
-	}
-
-	public void updatePutToRedis(JSONObject jsonObject, String id) {
-		// InsurancePlan insurancePlan = new InsurancePlan(id,
-		// jsonObject.toString());
-		// insurancedbConn.updateInsurancePlan(insurancePlan);
-
-		JSONUtility jsonUtility = new JSONUtility();
-		jsonUtility.jsonToMapAndStoreInRedis(jsonObject, insurancedbConn,
-				Long.parseLong(id.substring(id.indexOf("_") + 1, id.length())));
-
-	}
-
-	public void deleteFromRedis(String id) {
-		insurancedbConn.deleteInsurancePlan(id);
 	}
 
 }

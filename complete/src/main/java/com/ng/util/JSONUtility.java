@@ -3,15 +3,20 @@ package com.ng.util;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.sql.Timestamp;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
-import org.json.JSONException;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 
@@ -19,9 +24,9 @@ import com.ng.pojo.InsurancePlan;
 
 public class JSONUtility {
 	public InsuranceDBConn insuranceDBConn;
-	public long count;
+	public long counter;
 
-	public static Map<String, Object> jsonToMap(JSONObject json) throws JSONException {
+	public static Map<String, Object> jsonToMap(JSONObject json) {
 		Map<String, Object> retMap = new HashMap<String, Object>();
 
 		if (json != null) {
@@ -30,7 +35,7 @@ public class JSONUtility {
 		return retMap;
 	}
 
-	public static Map<String, Object> toMap(JSONObject object) throws JSONException {
+	public static Map<String, Object> toMap(JSONObject object) {
 		Map<String, Object> map = new HashMap<String, Object>();
 
 		Iterator<String> keysItr = object.keySet().iterator();
@@ -50,7 +55,7 @@ public class JSONUtility {
 		return map;
 	}
 
-	public static List<Object> toList(JSONArray array) throws JSONException {
+	public static List<Object> toList(JSONArray array) {
 		List<Object> list = new ArrayList<Object>();
 		for (int i = 0; i < array.size(); i++) {
 			Object value = array.get(i);
@@ -65,33 +70,6 @@ public class JSONUtility {
 		}
 		return list;
 	}
-
-	// public static boolean keyExists(JSONObject object, String searchedKey,
-	// Object value) {
-	// boolean exists = object.containsKey(searchedKey);
-	// if (!exists) {
-	// Iterator<String> keys = object.keySet().iterator();
-	// while (keys.hasNext()) {
-	// String key = keys.next();
-	// if (object.get(key) instanceof Map) {
-	// Map<String, Object> map= object.get(key);
-	// exists = keyExists(o, searchedKey, value);
-	// if(exists)
-	// {
-	// o.put(searchedKey, value);
-	// break;
-	// }
-	// }
-	//
-	// }
-	//
-	// }
-	// else{
-	// object.put(searchedKey, value);
-	// }
-	//
-	// return exists;
-	// }
 
 	public static boolean map(JSONObject oldObject, String searchedKey, Object value) {
 		Map<String, Object> mappedone = jsonToMap(oldObject);
@@ -112,36 +90,16 @@ public class JSONUtility {
 		return true;
 	}
 
-	public static JSONObject patch(JSONObject oldobject, JSONObject tobeUpdated) {
+	public static JSONObject patch(org.json.simple.JSONObject jsonObject1, org.json.simple.JSONObject jsonObject) {
 
-		Iterator<?> keys = tobeUpdated.keySet().iterator();
+		Iterator<?> keys = jsonObject.keySet().iterator();
 		while (keys.hasNext()) {
 			String key = (String) keys.next();
-			Object newValue = tobeUpdated.get(key);
-			oldobject.put(key, newValue);
-			
-		}
-		return oldobject;
-		
-		
-		
-	}
-
-	// new patch
-	public static JSONObject patchObj(JSONObject oldJsonObject1, JSONObject newJsonObject) {
-
-		Iterator<?> keys = newJsonObject.keySet().iterator();
-		while (keys.hasNext()) {
-			String key = (String) keys.next();
-			Object newValue = newJsonObject.get(key);
-			if (keyExists(oldJsonObject1, key, newValue)) {
-				oldJsonObject1.put(key, newValue);
-			} else {
-				newJsonObject.putIfAbsent(key, newValue);
-			}
+			Object newValue = jsonObject.get(key);
+			jsonObject1.put(key, newValue);
 
 		}
-		return oldJsonObject1;
+		return jsonObject1;
 	}
 
 	public static boolean keyExists(JSONObject object, String searchedKey, Object value) {
@@ -161,117 +119,118 @@ public class JSONUtility {
 		}
 		return exists;
 	}
-	
-	public static String generateEtag(String jsonObject) throws UnsupportedEncodingException, NoSuchAlgorithmException{
-		 try {
-		        MessageDigest md = MessageDigest.getInstance("MD5");
-		        byte[] array = md.digest(jsonObject.getBytes());
-		        StringBuffer sb = new StringBuffer();
-		        for (int i = 0; i < array.length; ++i) {
-		          sb.append(Integer.toHexString((array[i] & 0xFF) | 0x100).substring(1,3));
-		       }
-		        return sb.toString();
-		    } catch (java.security.NoSuchAlgorithmException e) {
-		    }
-		    return null;
-		
+
+	public static String getCurrentTimeStamp() {
+		Date date = new java.util.Date();
+		return new Timestamp(date.getTime()).toString();
 	}
 
-	public String jsonToMapAndStoreInRedis(JSONObject jsonObject, InsuranceDBConn insurancedbConn, long count) {
-		// TODO Auto-generated method stub
-		this.insuranceDBConn = insurancedbConn;
-		this.count = count;
-		if (jsonObject != null) {
-			return toMap1(jsonObject);
+	public static String getCalenderInstance() {
+
+		return Calendar.getInstance().getTime().toString();
+	}
+
+	public static boolean checkIfModfied(String clientLastModfiedTimeStamp, String redisLastModfiedTimeStamp)
+			throws ParseException {
+		SimpleDateFormat s1 = new SimpleDateFormat("E MMM dd HH:mm:ss Z yyyy");
+		Date dateOne = s1.parse(clientLastModfiedTimeStamp);
+		Date dateTwo = s1.parse(redisLastModfiedTimeStamp);
+		if (dateOne.equals(dateTwo)) {
+			return false;
+		} else {
+			return true;
+		}
+	}
+
+	public String jsonToMapAndStoreInRedis(JSONObject json, InsuranceDBConn insuranceDBConn, String uuid) {
+		this.insuranceDBConn = insuranceDBConn;
+		if (json != null) {
+			return toMap1(json, uuid);
 		}
 		return null;
 	}
 
-	public String toMap1(JSONObject jsonObj) {
+	public String toMap1(JSONObject object, String uuid) {
 		Map<String, Object> simplePropertiesMap = new HashMap<String, Object>();
 		/// id generation
-		long localCount = count;
-		Iterator<String> keysItr = jsonObj.keySet().iterator();
+		String localCount = uuid;
+		Iterator<String> keysItr = object.keySet().iterator();
 		Set relationship = new HashSet();
 		while (keysItr.hasNext()) {
 			String key = keysItr.next();
-			Object value = jsonObj.get(key);
+			Object value = object.get(key);
 
 			if (value instanceof Map) {
 				// id_relationship,Arraylist09alue--key
 				// key+uuid value--redis
+				String subUUID = JSONUtility.generateUUID();
 				if (!checkIfRef((Map) value)) {
-					relationship.add(key + "_" + localCount);
+					relationship.add(key + "_" + subUUID);
 				} else {
-					relationship.add("ref_" + key + "_" + localCount);
+					relationship.add("ref_" + key + "_" + subUUID);
 				}
-				relationship.add(key + "_" + localCount);
-				iterateMap(key + "_" + localCount, (Map) value, localCount);
+				iterateMap(key + "_" + subUUID, (Map) value, localCount);
 
 			} else if (value instanceof ArrayList) {
 				List valuesList = new ArrayList();
 				Set secondaryRelationship = new HashSet();
-				long arrylistCount = 0;
-				String mainArrKey = key + "_" + localCount;
+				String mainArrKey = key + "_" + JSONUtility.generateUUID();
+				;
 				for (Object val : (List) value) {
 
 					if (val instanceof Map) {
 						// serviceList_1
 						relationship.add(mainArrKey);
-						arrylistCount++;
+						String secUUID = JSONUtility.generateUUID();
 						if (!checkIfRef((Map) val)) {
-							secondaryRelationship.add(mainArrKey + "_" + arrylistCount);
+							secondaryRelationship.add(mainArrKey + "_" + secUUID);
 						} else {
-							secondaryRelationship.add("ref_" + mainArrKey + "_" + arrylistCount);
-						} 																// serviceLiset_1_2
-						String nextKey = mainArrKey + "_" + arrylistCount;
-						iterateMap(nextKey, (Map) val, arrylistCount);
+							secondaryRelationship.add("ref_" + mainArrKey + "_" + secUUID);
+						} // and
+							// serviceLiset_1_2
+						String nextKey = mainArrKey + "_" + secUUID;
+
+						iterateMap(nextKey, (Map) val, secUUID);
 					} else {
 						valuesList.add(val);
 					}
 
 				}
 				if (valuesList.size() > 0) {
+					simplePropertiesMap.put("uuid", uuid);
 					simplePropertiesMap.put(key, valuesList);
 				}
 				if (secondaryRelationship.size() > 0) {
-					InsurancePlan secondaryRela = new InsurancePlan(mainArrKey, secondaryRelationship.toString());
-					insuranceDBConn.saveInsuranceInfo(secondaryRela);
+					InsurancePlan secentityRelationship = new InsurancePlan(mainArrKey, secondaryRelationship.toString());
+					insuranceDBConn.saveInsuranceInfo(secentityRelationship);
 				}
 			}
 
 			else {
 				// id,map---redis
+				simplePropertiesMap.put("uuid", uuid);
 				simplePropertiesMap.put(key, value);
 
 			}
 
 		}
 		// Adding simple properties with main plan key in redis
+		String planKey = "plan_" + localCount;
 		if (!simplePropertiesMap.isEmpty()) {
-			InsurancePlan ip = new InsurancePlan("plan_" + localCount, new JSONObject(simplePropertiesMap).toString());
-			insuranceDBConn.saveInsuranceInfo(ip);
+			InsurancePlan entity = new InsurancePlan(planKey, new JSONObject(simplePropertiesMap).toString());
+			insuranceDBConn.saveInsuranceInfo(entity);
 		}
 
-		// Storing realtionships with main plan relationship key
+		// Storing relationships with main plan relationship key
 		if (relationship.size() > 0) {
-			InsurancePlan planRelationship = new InsurancePlan("rel_plan_" + localCount, relationship.toString());
-			insuranceDBConn.saveInsuranceInfo(planRelationship);
+			InsurancePlan entityRelationship = new InsurancePlan("rel_" + planKey, relationship.toString());
+			insuranceDBConn.saveInsuranceInfo(entityRelationship);
 		}
 
-		return "Plan_" + localCount ;
-	}
-	
-	public boolean checkIfRef(Map map) {
-		if (map.containsKey("ref") && null != map.get("ref")) {
-			return (boolean) map.get("ref");
-
-		}
-		return false;
-
+		return "plan/"+localCount;
 	}
 
-	private void iterateMap(String mainKey, Map valueMap, long localCount) {
+	private void iterateMap(String mainKey, Map valueMap, String localCount) {
 
 		Map<String, Object> simplePropertiesMap = new HashMap<String, Object>();
 		Iterator<String> keysItr = valueMap.keySet().iterator();
@@ -283,15 +242,21 @@ public class JSONUtility {
 			if (value instanceof Map) {
 				// id_relationship,Arraylist value--key
 				// key+uuid value--redis
-				relationship.add(key + "_" + localCount);
-				iterateMap(key, (Map) value, localCount);
+				String newUUIDSecondLevel = JSONUtility.generateUUID();
+				if (!checkIfRef((Map) value)) {
+					relationship.add(key + "_" + newUUIDSecondLevel);
+				} else {
+					relationship.add("ref_" + key + "_" + newUUIDSecondLevel);
+				}
+
+				iterateMap(key + "_" + newUUIDSecondLevel, (Map) value, newUUIDSecondLevel);
 
 			} else if (value instanceof ArrayList) {
 				List valuesList = new ArrayList();
-				long arrylistCount = localCount;
+				String arrylistCount = localCount;
 				for (Object val : (List) value) {
 					if (val instanceof Map) {
-						iterateMap(key + "_", (Map) val, arrylistCount++);
+						iterateMap(key + "_", (Map) val, arrylistCount);
 					} else {
 						valuesList.add(val);
 					}
@@ -300,23 +265,52 @@ public class JSONUtility {
 
 			} else {
 				// id,map---redis
+				simplePropertiesMap.put("uuid", mainKey.substring(mainKey.indexOf('_') + 1, mainKey.length()));
 				simplePropertiesMap.put(key, value);
 
 			}
 		}
 		// Adding simple properties with main plan key in redis
-		if (!simplePropertiesMap.isEmpty()) {
-			InsurancePlan ip = new InsurancePlan(mainKey, new JSONObject(simplePropertiesMap).toString());
-			insuranceDBConn.saveInsuranceInfo(ip);
+
+		if (!simplePropertiesMap.isEmpty() || relationship.size() > 0) {
+
+			InsurancePlan entity = new InsurancePlan(mainKey, new JSONObject(simplePropertiesMap).toString());
+			insuranceDBConn.saveInsuranceInfo(entity);
 		}
 
-		// Storing relationships with main plan relationship key
+		// Storing realtionships with main plan relationship key
 		if (relationship.size() > 0) {
-			InsurancePlan entityRelationship = new InsurancePlan("rel_plan_" + localCount + "_" + mainKey,
-					relationship.toString());
+			InsurancePlan entityRelationship = new InsurancePlan("rel_" + mainKey, relationship.toString());
 			insuranceDBConn.saveInsuranceInfo(entityRelationship);
 		}
 
 	}
 
+	public boolean checkIfRef(Map map) {
+		if (map.containsKey("ref") && null != map.get("ref")) {
+			return (boolean) map.get("ref");
+
+		}
+		return false;
+
+	}
+
+	public static String generateEtag(String jsonObject) throws UnsupportedEncodingException, NoSuchAlgorithmException {
+		try {
+			MessageDigest md = MessageDigest.getInstance("MD5");
+			byte[] array = md.digest(jsonObject.getBytes());
+			StringBuffer sb = new StringBuffer();
+			for (int i = 0; i < array.length; ++i) {
+				sb.append(Integer.toHexString((array[i] & 0xFF) | 0x100).substring(1, 3));
+			}
+			return sb.toString();
+		} catch (java.security.NoSuchAlgorithmException e) {
+		}
+		return null;
+
+	}
+
+	public static String generateUUID() {
+		return UUID.randomUUID().toString();
+	}
 }
